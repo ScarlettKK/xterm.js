@@ -31,6 +31,114 @@ import { Unicode11Addon } from '../addons/xterm-addon-unicode11/out/Unicode11Add
 // little weird here as we're importing "this" module
 import { Terminal as TerminalType, ITerminalOptions } from 'xterm';
 
+/*** Zmodem ***/
+
+import Zmodem from './zmodem.js' // 远程npm的包存在一些问题，这里暂时改成本地引入
+
+const zsentry = new Zmodem.Sentry({
+  to_terminal: toTerminal,
+  sender: sender,
+  on_detect: onDetect,
+  on_retract: onRetract
+})
+
+function toTerminal (octets) {
+  // console.log("toTerminal", octets)
+}
+
+function sender(octets) {
+  socket.send(new Uint8Array(octets)) // 上传的重点部分
+}
+
+function onDetect (detection) {
+  const zsession = detection.confirm();
+  if (zsession.type === "send") {
+    uploadFile(zsession)
+  }
+  else {
+    downloadFile(zsession)
+  }
+}
+
+function onRetract() {
+
+}
+
+function downloadFile(zsession) {
+  zsession.on("offer", (offer) => {
+    
+      const fileBuffer = [];
+
+      offer.on("input", (octets) => {
+        fileBuffer.push(new Uint8Array(octets));
+      });
+
+      offer.accept().then(() => {
+        saveFile(offer, fileBuffer);
+        term.write("\r\nDownload success!\r\n");
+      });
+  });
+
+  zsession.start();
+}
+
+function saveFile(xfer, buffer) {
+  const details = xfer.get_details()
+  return Zmodem.Browser.save_to_disk(buffer, details.name);
+}
+
+function uploadFile(zsession) {
+  var file_el = document.getElementById("btn_getFilePath");
+
+  file_el.click()
+  file_el.onchange = function() {
+      var files_obj = file_el.files;
+
+      Zmodem.Browser.send_files(
+          zsession,
+          files_obj,
+          { // 第一个参数为文件，第二个参数为传输信息
+            on_offer_response(obj, xfer) {
+              if (xfer) {
+                // 该文件第一次上传
+                term.write("\r\n");
+              } else {
+                // 该文件重复上传，服务器已经有同名文件
+                term.write(obj.name + " is already existed!\r\n");
+              }
+            },
+            on_progress(obj, xfer) {
+              updateProgress(xfer);
+            },
+            on_file_complete (obj) {
+              term.write("\r\n"+ obj.name + " complete upload! \r\n");
+            }
+          }
+      ).then(() => {
+        // 任何情况都会调用，上面的 on_file_complete 则是有重复文件/上传失败的时候不被调用
+        zsession._last_header_name = "ZRINIT";
+        zsession.close();
+        term.write("\r\n");
+      })
+  };
+}
+
+function updateProgress(xfer) {
+  let detail = xfer.get_details();
+  let name = detail.name;
+  let total = detail.size;
+  let percent;
+  if (total === 0) {
+    percent = 100
+  } else {
+    percent = Math.round(xfer._file_offset / total * 100);
+  }
+
+  term.write("\r\n" + name + ": " + total + " " + xfer._file_offset + " " + percent + "%    ");
+}
+
+/*** Zmodem ***/
+
 export interface IWindowWithTerminal extends Window {
   term: TerminalType;
   Terminal?: typeof TerminalType;
@@ -207,6 +315,10 @@ function createTerminal(): void {
         socket.onopen = runRealTerminal;
         socket.onclose = runFakeTerminal;
         socket.onerror = runFakeTerminal;
+        socket.binaryType = "arraybuffer"; // Zmodem文件传输必须设置这里
+        socket.addEventListener("message", function(event) {
+          zsentry.consume(event.data);
+        });
       });
     });
   }, 0);
